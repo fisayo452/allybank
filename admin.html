@@ -303,6 +303,22 @@
       return 'TX' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2, 3).toUpperCase();
     }
 
+    // === REFRESH USERS FROM FIRESTORE (CRITICAL FIX) ===
+    async function refreshUsers() {
+      try {
+        const usersSnapshot = await getDocs(collection(db, 'users'));
+        USERS = [];
+        usersSnapshot.forEach(doc => {
+          USERS.push({ id: doc.id, ...doc.data() });
+        });
+        loadUsersTab();
+        loadStats();
+      } catch (error) {
+        console.error('Failed to refresh users:', error);
+        alert('Failed to load users. Please refresh the page.');
+      }
+    }
+
     // === AUTH STATE OBSERVER ===
     onAuthStateChanged(auth, async (user) => {
       if (user) {
@@ -311,7 +327,8 @@
           CURRENT_ADMIN = user;
           document.getElementById('loginScreen').classList.remove('active');
           document.getElementById('dashboard').classList.add('active');
-          loadAdminData();
+          await refreshUsers();
+          generateAccountPreview();
         } else {
           alert('Access denied: You are not an admin.');
           signOut(auth);
@@ -331,7 +348,6 @@
 
       try {
         await signInWithEmailAndPassword(auth, email, password);
-        // onAuthStateChanged will handle UI
       } catch (error) {
         alert('Login failed: ' + error.message);
       }
@@ -341,18 +357,6 @@
     document.getElementById('logoutBtn').addEventListener('click', () => {
       signOut(auth);
     });
-
-    // === LOAD ADMIN DATA ===
-    async function loadAdminData() {
-      const usersSnapshot = await getDocs(collection(db, 'users'));
-      USERS = [];
-      usersSnapshot.forEach(doc => {
-        USERS.push({ id: doc.id, ...doc.data() });
-      });
-      loadUsersTab();
-      loadStats();
-      generateAccountPreview();
-    }
 
     // === USERS TAB ===
     function loadUsersTab() {
@@ -393,10 +397,8 @@
     document.getElementById('confirmDeleteBtn').addEventListener('click', async () => {
       try {
         await deleteDoc(doc(db, 'users', SELECTED_USER.id));
-        USERS = USERS.filter(u => u.id !== SELECTED_USER.id);
+        await refreshUsers(); // ← FIXED: Re-fetch from DB
         document.getElementById('deleteUserModal').classList.remove('active');
-        loadUsersTab();
-        loadStats();
         alert('User deleted permanently');
       } catch (error) {
         console.error('Delete user error:', error);
@@ -422,6 +424,7 @@
       const password = document.getElementById('newPassword').value;
       const accountNumber = document.getElementById('generatedAccNum').textContent;
 
+      // Check for duplicates in current list
       if (USERS.some(u => u.email === email || u.accountNumber === accountNumber)) {
         alert('User with this email or account number already exists');
         return;
@@ -437,13 +440,13 @@
         };
 
         await setDoc(doc(db, 'users', userId), newUser);
-        USERS.push({ id: userId, ...newUser });
+
+        // ← FIXED: Do NOT push manually
+        await refreshUsers(); // ← Re-fetch from Firestore
 
         alert(`User ${name} created successfully!`);
         document.getElementById('createUserForm').reset();
         generateAccountPreview();
-        loadUsersTab();
-        loadStats();
       } catch (error) {
         console.error('User creation error:', error);
         alert('Failed to create user: ' + error.message);
@@ -526,22 +529,10 @@
           }
         }
 
-        USERS = USERS.map(u => u.id === SELECTED_USER.id 
-          ? { ...u, ...updatedUser, pin: u.pin, balance: u.balance, accountNumber: u.accountNumber, createdAt: u.createdAt } 
-          : u);
-
-        // Update UI
-        document.getElementById('modalName').textContent = name;
-        document.getElementById('modalEmail').textContent = email;
-        document.getElementById('modalUsername').textContent = username;
-        document.getElementById('modalPhone').textContent = phone || 'Not set';
-        document.getElementById('modalAddress').textContent = address || 'Not set';
-        document.getElementById('modalDOB').textContent = dob ? new Date(dob).toLocaleDateString() : 'Not set';
+        await refreshUsers(); // ← FIXED: Re-fetch after update
 
         document.getElementById('editMode').style.display = 'none';
         document.getElementById('viewMode').style.display = 'block';
-        loadUsersTab();
-        loadStats();
         alert('User updated successfully');
       } catch (error) {
         console.error('User update error:', error);
@@ -656,12 +647,11 @@
       try {
         await updateDoc(doc(db, `users/${SELECTED_USER.id}/transactions`, EDITING_TX.id), updatedTx);
         await updateDoc(doc(db, 'users', SELECTED_USER.id), { balance: newBalance });
-        USERS = USERS.map(u => u.id === SELECTED_USER.id ? { ...u, balance: newBalance } : u);
+
+        await refreshUsers(); // ← FIXED: Re-fetch after balance change
 
         document.getElementById('editTransactionModal').classList.remove('active');
         loadUserTransactions();
-        loadUsersTab();
-        loadStats();
         alert('Transaction updated');
       } catch (error) {
         console.error('Transaction update error:', error);
@@ -690,11 +680,10 @@
       try {
         await addDoc(collection(db, `users/${SELECTED_USER.id}/transactions`), newTransaction);
         await updateDoc(doc(db, 'users', SELECTED_USER.id), { balance: newBalance });
-        USERS = USERS.map(u => u.id === SELECTED_USER.id ? { ...u, balance: newBalance } : u);
+
+        await refreshUsers(); // ← FIXED: Re-fetch after balance change
 
         loadUserTransactions();
-        loadUsersTab();
-        loadStats();
         alert(`$${amount} ${type}ed. Ref: ${refId}`);
       } catch (error) {
         console.error('Add transaction error:', error);
@@ -709,10 +698,7 @@
         const balance = parseFloat(newBal);
         try {
           await updateDoc(doc(db, 'users', SELECTED_USER.id), { balance });
-          USERS = USERS.map(u => u.id === SELECTED_USER.id ? { ...u, balance } : u);
-          document.getElementById('modalBalance').textContent = balance.toFixed(2);
-          loadUsersTab();
-          loadStats();
+          await refreshUsers(); // ← FIXED
           alert('Balance updated');
         } catch (error) {
           alert('Failed to update balance: ' + error.message);
@@ -725,7 +711,7 @@
       if (newPin && /^\d{4}$/.test(newPin)) {
         try {
           await updateDoc(doc(db, 'users', SELECTED_USER.id), { pin: newPin });
-          USERS = USERS.map(u => u.id === SELECTED_USER.id ? { ...u, pin: newPin } : u);
+          await refreshUsers(); // ← FIXED
           document.getElementById('modalPin').textContent = '••••';
           alert('PIN updated');
         } catch (error) {
@@ -742,7 +728,7 @@
         const createdAt = new Date(newDate).toISOString();
         try {
           await updateDoc(doc(db, 'users', SELECTED_USER.id), { createdAt });
-          USERS = USERS.map(u => u.id === SELECTED_USER.id ? { ...u, createdAt } : u);
+          await refreshUsers(); // ← FIXED
           alert('Account creation date updated');
         } catch (error) {
           alert('Failed to update creation date: ' + error.message);
